@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>GLB renderer</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1a1d24; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.184.0",
+    "three/addons/": "https://esm.sh/three@0.184.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+  import * as THREE from "three";
+  import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+  const RESIN_COLOR = new THREE.Color("#8a8580");
+
+  function sanitize(mat) {
+    mat.transparent = false;
+    mat.opacity = 1;
+    mat.depthWrite = true;
+    mat.alphaTest = 0;
+    mat.side = THREE.FrontSide;
+    if ("transmission" in mat) mat.transmission = 0;
+    if ("thickness" in mat) mat.thickness = 0;
+    if (!mat.map && mat.color) mat.color.copy(RESIN_COLOR);
+    mat.roughness = 0.85;
+    mat.metalness = 0;
+    mat.envMapIntensity = 0.25;
+    mat.needsUpdate = true;
+  }
+
+  /**
+   * Загружает GLB по URL и возвращает массив { angle, base64 } для каждого ракурса.
+   * Вызывается из Puppeteer через page.evaluate.
+   */
+  window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024) {
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    document.body.appendChild(canvas);
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      preserveDrawingBuffer: true,
+      alpha: false,
+    });
+    renderer.setPixelRatio(1);
+    renderer.setSize(size, size, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color("#1a1d24");
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.12));
+    const key = new THREE.DirectionalLight(0xffffff, 1.4);
+    key.position.set(3, 5, 5);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xf5f0e8, 0.5);
+    fill.position.set(-5, 2, 3);
+    scene.add(fill);
+    const rim = new THREE.DirectionalLight(0xffe5c8, 0.7);
+    rim.position.set(-4, 4, -5);
+    scene.add(rim);
+
+    const loader = new GLTFLoader();
+    const gltf = await new Promise((resolve, reject) => {
+      loader.load(glbUrl, resolve, undefined, reject);
+    });
+    const model = gltf.scene;
+
+    model.updateMatrixWorld(true);
+    const box0 = new THREE.Box3().setFromObject(model);
+    const size0 = box0.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size0.x, size0.y, size0.z) || 1;
+    const scale = 2.0 / maxDim;
+    model.scale.setScalar(scale);
+    model.updateMatrixWorld(true);
+
+    const box = new THREE.Box3().setFromObject(model);
+    const center = box.getCenter(new THREE.Vector3());
+    model.position.set(-center.x, -box.min.y, -center.z);
+    model.updateMatrixWorld(true);
+
+    model.traverse((obj) => {
+      if (obj.isMesh && obj.material) sanitize(obj.material);
+    });
+
+    scene.add(model);
+
+    const finalBox = new THREE.Box3().setFromObject(model);
+    const targetY = (finalBox.max.y - finalBox.min.y) * 0.5;
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    const results = [];
+
+    for (const a of angles) {
+      camera.position.set(a.position[0], a.position[1], a.position[2]);
+      camera.lookAt(0, targetY, 0);
+      renderer.render(scene, camera);
+      const dataUrl = canvas.toDataURL("image/png");
+      results.push({
+        angle: a.name,
+        base64: dataUrl.replace(/^data:image\/png;base64,/, ""),
+      });
+    }
+
+    renderer.dispose();
+    scene.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      const m = o.material;
+      if (Array.isArray(m)) m.forEach((x) => x.dispose());
+      else if (m) m.dispose();
+    });
+
+    return results;
+  };
+
+  window.__READY__ = true;
+</script>
+</body>
+</html>
