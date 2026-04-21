@@ -220,7 +220,7 @@
     };
   }
 
-  window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024, glbUnit = "m", assembledAt = "end") {
+  window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024, glbUnit = "m", assembledAt = "end", preparsedBase = null) {
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
@@ -292,10 +292,26 @@
     const unitToMm = glbUnit === "m" ? 1000 : glbUnit === "cm" ? 10 : 1;
     const heightWithBaseMm = rawSize.y * unitToMm;
 
-    // Приоритет: raw accessor из GLB JSON (через отдельный fetch GLB binary)
-    // → three.js findBaseByName → slice. Первый вариант устойчив к Draco и rotation.
-    const gltfJson = await fetchGlbJson(glbUrl);
-    let namedBase = gltfJson ? findBaseFromGltfJson(gltfJson) : null;
+    // Приоритет: preparsedBase из node.js (raw accessor, без CORS)
+    //   → fetch GLB в браузере (если preparsed нет) → three.js findBaseByName → slice.
+    let namedBase = null;
+    if (preparsedBase?.winner) {
+      const w = preparsedBase.winner;
+      const nameMatch = w.name.match(/(\d+)[_\s-]*base|base[_\s-]*(\d+)/i);
+      namedBase = {
+        name: w.name,
+        rangeX: w.range_x,
+        rangeZ: w.range_z,
+        sizeY: w.range_y,
+        name_hint_dim_mm: nameMatch ? parseInt(nameMatch[1] ?? nameMatch[2], 10) : null,
+        source: "preparsed_node",
+        all_candidates: preparsedBase.all_candidates,
+      };
+    }
+    if (!namedBase) {
+      const gltfJson = await fetchGlbJson(glbUrl);
+      namedBase = gltfJson ? findBaseFromGltfJson(gltfJson) : null;
+    }
     if (!namedBase) namedBase = findBaseByName(model);
     let baseMm, baseMethod, baseMeta, baseThicknessRaw;
     if (namedBase && Math.max(namedBase.rangeX, namedBase.rangeZ) > 0) {
