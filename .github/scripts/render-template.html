@@ -49,6 +49,25 @@
   // применяет всю матрицу → AABB повёрнутой плоской базы получается меньше
   // реального диаметра (10236 fig2: real 60, world bbox дал 37).
   // Геометрия в local coords — это чистый дизайн меша, rotation на размер не влияет.
+  // Отдельно fetch GLB и парсим JSON chunk из header (минуя GLTFLoader).
+  // gltf.parser.json в esm.sh сборке three.js недоступен, поэтому читаем сами.
+  async function fetchGlbJson(glbUrl) {
+    try {
+      const resp = await fetch(glbUrl);
+      if (!resp.ok) return null;
+      const buf = await resp.arrayBuffer();
+      const dv = new DataView(buf);
+      const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+      if (magic !== "glTF") return null;
+      const chunkLen = dv.getUint32(12, true);
+      const jsonStr = new TextDecoder().decode(new Uint8Array(buf, 20, chunkLen));
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      console.warn("fetchGlbJson failed:", e.message);
+      return null;
+    }
+  }
+
   // Читает raw accessor.POSITION.min/max из GLB JSON metadata, обходя three.js
   // и Draco decoder. Размер базы = (max - min) × abs(node.scale) — без rotation,
   // т.к. rotation для квадратной базы искажает world AABB (10236 fig2 node
@@ -273,8 +292,9 @@
     const unitToMm = glbUnit === "m" ? 1000 : glbUnit === "cm" ? 10 : 1;
     const heightWithBaseMm = rawSize.y * unitToMm;
 
-    // Приоритет: raw accessor из GLB JSON → three.js findBaseByName → slice.
-    const gltfJson = gltf.parser?.json;
+    // Приоритет: raw accessor из GLB JSON (через отдельный fetch GLB binary)
+    // → three.js findBaseByName → slice. Первый вариант устойчив к Draco и rotation.
+    const gltfJson = await fetchGlbJson(glbUrl);
     let namedBase = gltfJson ? findBaseFromGltfJson(gltfJson) : null;
     if (!namedBase) namedBase = findBaseByName(model);
     let baseMm, baseMethod, baseMeta, baseThicknessRaw;
