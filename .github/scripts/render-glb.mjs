@@ -1,13 +1,17 @@
 // Рендер GLB модели через puppeteer + headless chromium в GitHub Actions.
-// Читает assembly_figures из Supabase (service role), рендерит 6 ракурсов
-// на каждую фигуру, сохраняет PNG в 3d_renders/{model_code}/{figure_id}/,
-// опционально шлёт в analyze-figure-renders для записи в figure_vision_trials.
+// Читает список фигур через публичный endpoint get-model-figures,
+// рендерит 6 ракурсов на каждую фигуру, сохраняет PNG в
+// 3d_renders/{model_code}/{figure_id}/, опционально шлёт в scan-figure-renders.
+//
+// scan-figure-renders использует тот же UNIFIED_PROMPT что analyze-miniature-images
+// v75 и пишет в sandbox-таблицу figure_vision_trials с embedding 3072d.
+// Прод-таблицы (assembly_figures, product_catalog_data, product_embeddings)
+// не трогаются.
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { Buffer } from "node:buffer";
-import { createClient } from "@supabase/supabase-js";
 import puppeteer from "puppeteer";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,15 +28,14 @@ const ANGLES = [
 
 const {
   SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
   MODEL_CODE,
   RUN_LABEL,
   DO_ANALYZE,
   REPO_ROOT,
 } = process.env;
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY secrets");
+if (!SUPABASE_URL) {
+  console.error("Missing SUPABASE_URL secret");
   process.exit(1);
 }
 if (!MODEL_CODE) {
@@ -43,33 +46,24 @@ if (!MODEL_CODE) {
 const repoRoot = REPO_ROOT ? resolve(REPO_ROOT) : resolve(__dirname, "..", "..");
 const renderRootOut = join(repoRoot, "3d_renders", MODEL_CODE);
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { autoRefreshToken: false, persistSession: false },
-});
-
 async function loadFigures() {
-  const { data: model, error: mErr } = await supabase
-    .from("assembly_models")
-    .select("code, offer_id, name, universe, race")
-    .eq("code", MODEL_CODE)
-    .maybeSingle();
-  if (mErr) throw new Error(`assembly_models: ${mErr.message}`);
-  if (!model) throw new Error(`model ${MODEL_CODE} not found`);
-
-  const { data: figs, error: fErr } = await supabase
-    .from("assembly_figures")
-    .select("figure_id, name, glb_url, sort_order")
-    .eq("model_code", MODEL_CODE)
-    .order("sort_order");
-  if (fErr) throw new Error(`assembly_figures: ${fErr.message}`);
-  if (!figs?.length) throw new Error(`no figures for ${MODEL_CODE}`);
-
-  return { model, figures: figs };
+  const url = `${SUPABASE_URL}/functions/v1/get-model-figures`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_code: MODEL_CODE }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) {
+    throw new Error(`get-model-figures ${resp.status}: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  if (!data.figures?.length) throw new Error(`no figures for model ${MODEL_CODE}`);
+  return { model: data.model, figures: data.figures };
 }
 
 async function postAnalyze({ figure, renders, modelName }) {
-  // scan-figure-renders: копия analyze-miniature-images с ТЕМ ЖЕ UNIFIED_PROMPT,
-  // но пишет в figure_vision_trials (sandbox) и считает embedding.
+  // scan-figure-renders: копия analyze-miniature-images с тем же UNIFIED_PROMPT,
+  // пишет в figure_vision_trials (sandbox) и считает embedding 3072d.
   const url = `${SUPABASE_URL}/functions/v1/scan-figure-renders`;
   const body = {
     model_code: MODEL_CODE,
@@ -88,7 +82,7 @@ async function postAnalyze({ figure, renders, modelName }) {
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.ok) {
-    throw new Error(`analyze ${resp.status}: ${JSON.stringify(data).slice(0, 300)}`);
+    throw new Error(`scan-figure-renders ${resp.status}: ${JSON.stringify(data).slice(0, 300)}`);
   }
   return data;
 }
@@ -106,7 +100,6 @@ async function main() {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      // WebGL в headless chromium на Linux: SwiftShader даёт stable software rendering
       "--use-gl=swiftshader",
       "--enable-webgl",
       "--ignore-gpu-blocklist",
@@ -145,7 +138,6 @@ async function main() {
       }
       console.log(`  rendered ${renders.length} angles in ${Date.now() - t0} ms`);
 
-      // Сохраняем PNG в файлы для коммита
       const figureDir = join(renderRootOut, fig.figure_id);
       await mkdir(figureDir, { recursive: true });
       for (const r of renders) {
@@ -158,7 +150,9 @@ async function main() {
         try {
           const res = await postAnalyze({ figure: fig, renders, modelName: model.name });
           const s = res.result_summary ?? {};
-          console.log(`  analyzed: system=${s.system} faction=${s.faction} race=${s.race} class=${s.class} trial=${res.trial_id} embed=${res.embedding_dims}`);
+          console.log(
+            `  analyzed: system=${s.system} faction=${s.faction} race=${s.race} class=${s.class} trial=${res.trial_id} embed=${res.embedding_dims}`,
+          );
           summary.push({
             figure: fig.figure_id,
             state: "ok",
@@ -182,7 +176,6 @@ async function main() {
     await browser.close();
   }
 
-  // Сводка в GH step summary
   const gh = process.env.GITHUB_STEP_SUMMARY;
   if (gh) {
     const { appendFile } = await import("node:fs/promises");
