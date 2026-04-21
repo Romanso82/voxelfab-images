@@ -16,12 +16,21 @@ import { Buffer as NodeBuffer } from "node:buffer";
 async function fetchGlbJsonNode(url) {
   try {
     const resp = await fetch(url);
+    console.log(`  glb fetch: status=${resp.status} ok=${resp.ok} len=${resp.headers.get("content-length")}`);
     if (!resp.ok) return null;
     const buf = NodeBuffer.from(await resp.arrayBuffer());
-    if (buf.slice(0, 4).toString("ascii") !== "glTF") return null;
+    const magic = buf.slice(0, 4).toString("ascii");
+    console.log(`  glb bytes=${buf.length} magic='${magic}' hex4=${buf.slice(0, 4).toString("hex")}`);
+    if (magic !== "glTF") return null;
+    const version = buf.readUInt32LE(4);
+    const totalLen = buf.readUInt32LE(8);
     const chunkLen = buf.readUInt32LE(12);
+    const chunkType = buf.slice(16, 20).toString("ascii");
+    console.log(`  glb version=${version} total=${totalLen} chunk0: type='${chunkType}' len=${chunkLen}`);
     const jsonStr = buf.slice(20, 20 + chunkLen).toString("utf8");
-    return JSON.parse(jsonStr);
+    const parsed = JSON.parse(jsonStr);
+    console.log(`  glb json: nodes=${parsed.nodes?.length} meshes=${parsed.meshes?.length}`);
+    return parsed;
   } catch (e) {
     console.warn(`  fetchGlbJsonNode: ${e.message}`);
     return null;
