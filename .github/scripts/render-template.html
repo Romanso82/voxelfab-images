@@ -73,7 +73,11 @@
   // т.к. rotation для квадратной базы искажает world AABB (10236 fig2 node
   // 60_base имеет quaternion 180° → world AABB квадрата 60×60 → 74×74 или 37×37).
   function findBaseFromGltfJson(gltfJson) {
-    const patterns = [/\bbase\b/i, /подставк/i, /основани/i];
+    const patterns = [
+      /(^|[_\-\.\s])base([_\-\.\s]|$)/i,
+      /подставк/i,
+      /основани/i,
+    ];
     const nodes = gltfJson?.nodes ?? [];
     const meshes = gltfJson?.meshes ?? [];
     const accessors = gltfJson?.accessors ?? [];
@@ -130,7 +134,11 @@
   }
 
   function findBaseByName(root) {
-    const patterns = [/\bbase\b/i, /подставк/i, /основани/i];
+    const patterns = [
+      /(^|[_\-\.\s])base([_\-\.\s]|$)/i,
+      /подставк/i,
+      /основани/i,
+    ];
     const candidates = [];
     root.traverse((obj) => {
       const n = obj.name ?? "";

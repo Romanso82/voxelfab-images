@@ -37,7 +37,17 @@ async function fetchGlbJsonNode(url) {
   }
 }
 
-const BASE_NAME_PATTERNS = [/\bbase\b/i, /подставк/i, /основани/i];
+// Regex matches:
+//   - exact 'base', 'Base'
+//   - '60_base', '232_base.001', 'figure_base'
+//   - 'base_60', 'base.001', 'base mesh'
+// Does NOT match: 'baseball', 'databases'
+// Причина: \b (word boundary) в JS не работает рядом с '_' т.к. оба \w.
+const BASE_NAME_PATTERNS = [
+  /(^|[_\-\.\s])base([_\-\.\s]|$)/i,
+  /подставк/i,
+  /основани/i,
+];
 
 function findBaseFromGltfJson(gltfJson) {
   if (!gltfJson) return null;
