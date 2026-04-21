@@ -20,6 +20,12 @@
 <script type="module">
   import * as THREE from "three";
   import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+  import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+
+  // GLB-файлы экспортируются из Blender с Draco compression (см. docs/blender-guide.md).
+  // Без DRACOLoader — GLTFLoader падает с "No DRACOLoader instance provided".
+  const dracoLoader = new DRACOLoader();
+  dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
 
   const RESIN_COLOR = new THREE.Color("#8a8580");
 
@@ -75,6 +81,7 @@
     scene.add(rim);
 
     const loader = new GLTFLoader();
+    loader.setDRACOLoader(dracoLoader);
     const gltf = await new Promise((resolve, reject) => {
       loader.load(glbUrl, resolve, undefined, reject);
     });
