@@ -23,7 +23,6 @@
   import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 
   // GLB-файлы экспортируются из Blender с Draco compression (см. docs/blender-guide.md).
-  // Без DRACOLoader — GLTFLoader падает с "No DRACOLoader instance provided".
   const dracoLoader = new DRACOLoader();
   dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
 
@@ -44,11 +43,61 @@
     mat.needsUpdate = true;
   }
 
-  /**
-   * Загружает GLB по URL и возвращает массив { angle, base64 } для каждого ракурса.
-   * Вызывается из Puppeteer через page.evaluate.
-   */
-  window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024) {
+  // Первый приоритет: ищем mesh/node с именем, похожим на базу.
+  // Blender при экспорте сохраняет object.name в node.name / mesh.name GLB.
+  // Возвращает { object, rangeX, rangeZ } или null.
+  function findBaseByName(root) {
+    const patterns = [/^base$/i, /_base$/i, /\bbase\b/i, /подставк/i, /основани/i];
+    let found = null;
+    root.traverse((obj) => {
+      if (found) return;
+      const n = obj.name ?? "";
+      if (!n) return;
+      if (patterns.some((p) => p.test(n))) {
+        found = obj;
+      }
+    });
+    if (!found) return null;
+    found.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(found);
+    const sz = box.getSize(new THREE.Vector3());
+    return {
+      name: found.name,
+      rangeX: sz.x,
+      rangeZ: sz.z,
+      sizeY: sz.y,
+      min_y: box.min.y,
+      max_y: box.max.y,
+    };
+  }
+
+  // Fallback: идём по всем треугольникам и считаем X/Z экстремумы для точек
+  // у которых world.Y ≤ thresholdY. Возвращает { rangeX, rangeZ } в raw-units.
+  function measureBaseFootprint(root, thresholdY) {
+    let minX = +Infinity, maxX = -Infinity, minZ = +Infinity, maxZ = -Infinity;
+    let hits = 0;
+    const v = new THREE.Vector3();
+    root.updateMatrixWorld(true);
+    root.traverse((obj) => {
+      if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
+      const pos = obj.geometry.attributes.position;
+      const mat = obj.matrixWorld;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(mat);
+        if (v.y <= thresholdY) {
+          if (v.x < minX) minX = v.x;
+          if (v.x > maxX) maxX = v.x;
+          if (v.z < minZ) minZ = v.z;
+          if (v.z > maxZ) maxZ = v.z;
+          hits++;
+        }
+      }
+    });
+    if (hits === 0) return { rangeX: 0, rangeZ: 0, hits: 0 };
+    return { rangeX: maxX - minX, rangeZ: maxZ - minZ, hits };
+  }
+
+  window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024, glbUnit = "m") {
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
@@ -87,10 +136,79 @@
     });
     const model = gltf.scene;
 
+    // === ИЗМЕРЕНИЯ В RAW UNITS (до применения scale и центрирования) ===
+    // Если есть анимация (сборка) — переключимся на последний кадр (assembled pose)
+    // чтобы мерить фигуру в финальном виде, а не в разобранном.
+    let mixer = null;
+    if (gltf.animations && gltf.animations.length > 0) {
+      mixer = new THREE.AnimationMixer(model);
+      let maxDur = 0;
+      for (const clip of gltf.animations) {
+        const a = mixer.clipAction(clip);
+        a.setLoop(THREE.LoopRepeat, Infinity);
+        a.enabled = true;
+        a.play();
+        if (clip.duration > maxDur) maxDur = clip.duration;
+      }
+      // Ставим каждому action его максимальное время (per-clip clamp)
+      mixer._actions.forEach((a) => {
+        const d = a.getClip().duration;
+        a.time = Math.max(0, d - 0.001);
+        a.paused = false;
+      });
+      mixer.update(0);
+    }
     model.updateMatrixWorld(true);
-    const box0 = new THREE.Box3().setFromObject(model);
-    const size0 = box0.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size0.x, size0.y, size0.z) || 1;
+
+    const rawBox = new THREE.Box3().setFromObject(model);
+    const rawSize = rawBox.getSize(new THREE.Vector3());
+
+    const unitToMm = glbUnit === "m" ? 1000 : glbUnit === "cm" ? 10 : 1;
+    const heightWithBaseMm = rawSize.y * unitToMm;
+
+    // Приоритет: именованный mesh "base"/"Base"/"подставка" в GLB → fallback на slice 10%.
+    const namedBase = findBaseByName(model);
+    let baseMm, baseMethod, baseMeta;
+    if (namedBase && Math.max(namedBase.rangeX, namedBase.rangeZ) > 0) {
+      baseMm = Math.max(namedBase.rangeX, namedBase.rangeZ) * unitToMm;
+      baseMethod = "named_mesh";
+      baseMeta = namedBase;
+    } else {
+      const baseSliceHeight = rawSize.y * 0.10;
+      const thresholdY = rawBox.min.y + baseSliceHeight;
+      const slice = measureBaseFootprint(model, thresholdY);
+      baseMm = Math.max(slice.rangeX, slice.rangeZ) * unitToMm;
+      baseMethod = "slice_10pct";
+      baseMeta = {
+        threshold_y: thresholdY,
+        range_x_raw: slice.rangeX,
+        range_z_raw: slice.rangeZ,
+        vertices_hit: slice.hits,
+      };
+    }
+
+    // Высота без базы: если нашли именованную базу — вычитаем её реальную толщину,
+    // иначе — приближённо вычитаем slice-высоту (10% bbox).
+    const baseThicknessRaw = namedBase ? namedBase.sizeY : rawSize.y * 0.10;
+    const heightMm = heightWithBaseMm - baseThicknessRaw * unitToMm;
+
+    const measurements = {
+      height_with_base_mm: Math.round(heightWithBaseMm),
+      height_mm: Math.round(heightMm),
+      base_mm: Math.round(baseMm),
+      base_standard_mm: snapToStandard(baseMm),
+      base_method: baseMethod,
+      raw_bbox: {
+        min: { x: rawBox.min.x, y: rawBox.min.y, z: rawBox.min.z },
+        max: { x: rawBox.max.x, y: rawBox.max.y, z: rawBox.max.z },
+        size: { x: rawSize.x, y: rawSize.y, z: rawSize.z },
+      },
+      base_meta: baseMeta,
+      glb_unit_used: glbUnit,
+    };
+
+    // === ПОДГОТОВКА К РЕНДЕРУ ===
+    const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z) || 1;
     const scale = 2.0 / maxDim;
     model.scale.setScalar(scale);
     model.updateMatrixWorld(true);
@@ -131,8 +249,18 @@
       else if (m) m.dispose();
     });
 
-    return results;
+    return { images: results, measurements };
   };
+
+  // Снап к стандартам D&D/Pathfinder/Warhammer баз. Tolerance ±1.1 мм.
+  // Возвращает стандартное значение или null если замер не попал ни в один.
+  const BASE_STANDARDS = [20, 25, 32, 40, 50, 65, 80, 100];
+  function snapToStandard(mm, tolerance = 1.1) {
+    for (const s of BASE_STANDARDS) {
+      if (Math.abs(mm - s) <= tolerance) return s;
+    }
+    return null;
+  }
 
   window.__READY__ = true;
 </script>

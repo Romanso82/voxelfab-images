@@ -61,7 +61,7 @@ async function loadFigures() {
   return { model: data.model, figures: data.figures };
 }
 
-async function postAnalyze({ figure, renders, modelName }) {
+async function postAnalyze({ figure, renders, measurements, modelName }) {
   // scan-figure-renders: копия analyze-miniature-images с тем же UNIFIED_PROMPT,
   // пишет в figure_vision_trials (sandbox) и считает embedding 3072d.
   const url = `${SUPABASE_URL}/functions/v1/scan-figure-renders`;
@@ -74,6 +74,7 @@ async function postAnalyze({ figure, renders, modelName }) {
     model_name: modelName,
     angles: renders.map((r) => r.angle),
     images_base64: renders.map((r) => r.base64),
+    measurements, // { height_mm, height_with_base_mm, base_mm, base_standard_mm, raw_bbox, glb_unit_used }
   };
   const resp = await fetch(url, {
     method: "POST",
@@ -123,20 +124,26 @@ async function main() {
     for (const fig of figures) {
       console.log(`\n== ${fig.figure_id} ${fig.name}`);
       const t0 = Date.now();
-      let renders;
+      let renderResult;
       try {
-        renders = await page.evaluate(
-          (url, angles, size) => window.renderGLB(url, angles, size),
+        renderResult = await page.evaluate(
+          (url, angles, size, glbUnit) => window.renderGLB(url, angles, size, glbUnit),
           fig.glb_url,
           ANGLES,
           1024,
+          fig.glb_unit ?? "m",
         );
       } catch (e) {
         console.error(`  render failed: ${e.message ?? e}`);
         summary.push({ figure: fig.figure_id, state: "render_error", error: String(e.message ?? e) });
         continue;
       }
+      const renders = renderResult.images;
+      const measurements = renderResult.measurements;
       console.log(`  rendered ${renders.length} angles in ${Date.now() - t0} ms`);
+      console.log(
+        `  measured: total=${measurements.height_with_base_mm}mm body=${measurements.height_mm}mm base=${measurements.base_mm}mm std=${measurements.base_standard_mm ?? "-"}mm unit=${measurements.glb_unit_used}`,
+      );
 
       const figureDir = join(renderRootOut, fig.figure_id);
       await mkdir(figureDir, { recursive: true });
@@ -148,20 +155,21 @@ async function main() {
 
       if (shouldAnalyze) {
         try {
-          const res = await postAnalyze({ figure: fig, renders, modelName: model.name });
+          const res = await postAnalyze({ figure: fig, renders, measurements, modelName: model.name });
           const s = res.result_summary ?? {};
           console.log(
-            `  analyzed: system=${s.system} faction=${s.faction} race=${s.race} class=${s.class} trial=${res.trial_id} embed=${res.embedding_dims}`,
+            `  analyzed: system=${s.system} race=${s.race} class=${s.class} trial=${res.trial_id} embed=${res.embedding_dims}`,
           );
           summary.push({
             figure: fig.figure_id,
             state: "ok",
             trial_id: res.trial_id,
             system: s.system,
-            faction: s.faction,
             race: s.race,
             class: s.class,
-            weapons: s.weapons,
+            base_mm: measurements.base_mm,
+            base_std: measurements.base_standard_mm,
+            height_with_base_mm: measurements.height_with_base_mm,
             embed_dims: res.embedding_dims,
           });
         } catch (e) {
@@ -169,7 +177,13 @@ async function main() {
           summary.push({ figure: fig.figure_id, state: "analyze_error", error: String(e.message ?? e) });
         }
       } else {
-        summary.push({ figure: fig.figure_id, state: "rendered_only" });
+        summary.push({
+          figure: fig.figure_id,
+          state: "rendered_only",
+          base_mm: measurements.base_mm,
+          base_std: measurements.base_standard_mm,
+          height_with_base_mm: measurements.height_with_base_mm,
+        });
       }
     }
   } finally {
@@ -182,10 +196,10 @@ async function main() {
     const lines = [
       "",
       "### Per-figure results",
-      "| figure_id | state | system | faction | race | class | embed | trial_id |",
-      "| --- | --- | --- | --- | --- | --- | ---: | ---: |",
+      "| figure_id | state | race | class | base mm | base std | total mm | trial_id |",
+      "| --- | --- | --- | --- | ---: | ---: | ---: | ---: |",
       ...summary.map((s) =>
-        `| ${s.figure} | ${s.state} | ${s.system ?? "-"} | ${s.faction ?? "-"} | ${s.race ?? "-"} | ${s.class ?? "-"} | ${s.embed_dims ?? "-"} | ${s.trial_id ?? "-"} |`,
+        `| ${s.figure} | ${s.state} | ${s.race ?? "-"} | ${s.class ?? "-"} | ${s.base_mm ?? "-"} | ${s.base_std ?? "-"} | ${s.height_with_base_mm ?? "-"} | ${s.trial_id ?? "-"} |`,
       ),
       "",
     ];
