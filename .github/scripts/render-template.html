@@ -49,6 +49,67 @@
   // применяет всю матрицу → AABB повёрнутой плоской базы получается меньше
   // реального диаметра (10236 fig2: real 60, world bbox дал 37).
   // Геометрия в local coords — это чистый дизайн меша, rotation на размер не влияет.
+  // Читает raw accessor.POSITION.min/max из GLB JSON metadata, обходя three.js
+  // и Draco decoder. Размер базы = (max - min) × abs(node.scale) — без rotation,
+  // т.к. rotation для квадратной базы искажает world AABB (10236 fig2 node
+  // 60_base имеет quaternion 180° → world AABB квадрата 60×60 → 74×74 или 37×37).
+  function findBaseFromGltfJson(gltfJson) {
+    const patterns = [/\bbase\b/i, /подставк/i, /основани/i];
+    const nodes = gltfJson?.nodes ?? [];
+    const meshes = gltfJson?.meshes ?? [];
+    const accessors = gltfJson?.accessors ?? [];
+    const candidates = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const name = node.name || "";
+      if (!patterns.some((p) => p.test(name))) continue;
+      const meshIdx = node.mesh;
+      if (meshIdx === undefined) continue;
+      const mesh = meshes[meshIdx];
+      const prim = mesh?.primitives?.[0];
+      if (!prim) continue;
+      const accIdx = prim.attributes?.POSITION;
+      if (accIdx === undefined) continue;
+      const acc = accessors[accIdx];
+      if (!acc?.min || !acc?.max) continue;
+      const mn = acc.min;
+      const mx = acc.max;
+      const sx = Math.abs(node.scale?.[0] ?? 1);
+      const sy = Math.abs(node.scale?.[1] ?? 1);
+      const sz = Math.abs(node.scale?.[2] ?? 1);
+      const rangeX = (mx[0] - mn[0]) * sx;
+      const rangeY = (mx[1] - mn[1]) * sy;
+      const rangeZ = (mx[2] - mn[2]) * sz;
+      const tY = node.translation?.[1] ?? 0;
+      candidates.push({
+        name,
+        rangeX,
+        rangeY,
+        rangeZ,
+        tY,
+        nodeIdx: i,
+        meshIdx,
+        mesh_name: mesh?.name ?? null,
+      });
+    }
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => a.tY - b.tY);
+    const winner = candidates[0];
+    const nameMatch = winner.name.match(/(\d+)[_\s-]*base|base[_\s-]*(\d+)/i);
+    const nameDimMm = nameMatch ? parseInt(nameMatch[1] ?? nameMatch[2], 10) : null;
+    return {
+      ...winner,
+      sizeY: winner.rangeY,
+      name_hint_dim_mm: nameDimMm,
+      all_candidates: candidates.map((c) => ({
+        name: c.name,
+        t_y: c.tY,
+        range_x: c.rangeX,
+        range_z: c.rangeZ,
+      })),
+    };
+  }
+
   function findBaseByName(root) {
     const patterns = [/\bbase\b/i, /подставк/i, /основани/i];
     const candidates = [];
@@ -212,8 +273,10 @@
     const unitToMm = glbUnit === "m" ? 1000 : glbUnit === "cm" ? 10 : 1;
     const heightWithBaseMm = rawSize.y * unitToMm;
 
-    // Приоритет: именованный mesh "base"/"Base"/"подставка" в GLB → fallback на тонкий slice.
-    const namedBase = findBaseByName(model);
+    // Приоритет: raw accessor из GLB JSON → three.js findBaseByName → slice.
+    const gltfJson = gltf.parser?.json;
+    let namedBase = gltfJson ? findBaseFromGltfJson(gltfJson) : null;
+    if (!namedBase) namedBase = findBaseByName(model);
     let baseMm, baseMethod, baseMeta, baseThicknessRaw;
     if (namedBase && Math.max(namedBase.rangeX, namedBase.rangeZ) > 0) {
       baseMm = Math.max(namedBase.rangeX, namedBase.rangeZ) * unitToMm;
