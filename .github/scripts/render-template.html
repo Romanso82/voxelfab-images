@@ -71,11 +71,12 @@
     };
   }
 
-  // Fallback: идём по всем треугольникам и считаем X/Z экстремумы для точек
-  // у которых world.Y ≤ thresholdY. Возвращает { rangeX, rangeZ } в raw-units.
-  function measureBaseFootprint(root, thresholdY) {
-    let minX = +Infinity, maxX = -Infinity, minZ = +Infinity, maxZ = -Infinity;
-    let hits = 0;
+  // Fallback: собираем X/Z вершин в нижнем slice, считаем percentile-range
+  // вместо min/max — устойчиво к outliers (рукоять оружия лежащая на полу,
+  // вылезающая за край базы). p=0.05 отсечёт по 5% с каждой стороны.
+  function measureBaseFootprint(root, thresholdY, pct = 0.05) {
+    const xs = [];
+    const zs = [];
     const v = new THREE.Vector3();
     root.updateMatrixWorld(true);
     root.traverse((obj) => {
@@ -85,16 +86,25 @@
       for (let i = 0; i < pos.count; i++) {
         v.fromBufferAttribute(pos, i).applyMatrix4(mat);
         if (v.y <= thresholdY) {
-          if (v.x < minX) minX = v.x;
-          if (v.x > maxX) maxX = v.x;
-          if (v.z < minZ) minZ = v.z;
-          if (v.z > maxZ) maxZ = v.z;
-          hits++;
+          xs.push(v.x);
+          zs.push(v.z);
         }
       }
     });
-    if (hits === 0) return { rangeX: 0, rangeZ: 0, hits: 0 };
-    return { rangeX: maxX - minX, rangeZ: maxZ - minZ, hits };
+    if (xs.length === 0) return { rangeX: 0, rangeZ: 0, rangeX_full: 0, rangeZ_full: 0, hits: 0 };
+    xs.sort((a, b) => a - b);
+    zs.sort((a, b) => a - b);
+    const loIdx = Math.floor(xs.length * pct);
+    const hiIdx = Math.floor(xs.length * (1 - pct)) - 1;
+    const loX = xs[loIdx], hiX = xs[hiIdx];
+    const loZ = zs[loIdx], hiZ = zs[hiIdx];
+    return {
+      rangeX: hiX - loX,
+      rangeZ: hiZ - loZ,
+      rangeX_full: xs[xs.length - 1] - xs[0],
+      rangeZ_full: zs[zs.length - 1] - zs[0],
+      hits: xs.length,
+    };
   }
 
   window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024, glbUnit = "m", assembledAt = "end") {
@@ -185,14 +195,16 @@
       const baseSliceMm = 2;
       const baseSliceRaw = Math.max(baseSliceMm / unitToMm, rawSize.y * 0.05);
       const thresholdY = rawBox.min.y + baseSliceRaw;
-      const slice = measureBaseFootprint(model, thresholdY);
+      const slice = measureBaseFootprint(model, thresholdY, 0.05);
       baseMm = Math.max(slice.rangeX, slice.rangeZ) * unitToMm;
-      baseMethod = "slice_bottom_2mm";
+      baseMethod = "slice_bottom_2mm_p5p95";
       baseMeta = {
         threshold_y: thresholdY,
         slice_height_mm: baseSliceRaw * unitToMm,
-        range_x_raw: slice.rangeX,
-        range_z_raw: slice.rangeZ,
+        range_x_p5p95_mm: slice.rangeX * unitToMm,
+        range_z_p5p95_mm: slice.rangeZ * unitToMm,
+        range_x_full_mm: slice.rangeX_full * unitToMm,
+        range_z_full_mm: slice.rangeZ_full * unitToMm,
         vertices_hit: slice.hits,
       };
       baseThicknessRaw = baseSliceRaw;
