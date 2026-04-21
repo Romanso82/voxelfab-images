@@ -9,6 +9,64 @@
 // не трогаются.
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { Buffer as NodeBuffer } from "node:buffer";
+
+// Fetch GLB binary, parse header + JSON chunk в Node (без браузерного CORS).
+// Возвращает parsed gltf.json или null при ошибке.
+async function fetchGlbJsonNode(url) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const buf = NodeBuffer.from(await resp.arrayBuffer());
+    if (buf.slice(0, 4).toString("ascii") !== "glTF") return null;
+    const chunkLen = buf.readUInt32LE(12);
+    const jsonStr = buf.slice(20, 20 + chunkLen).toString("utf8");
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.warn(`  fetchGlbJsonNode: ${e.message}`);
+    return null;
+  }
+}
+
+const BASE_NAME_PATTERNS = [/\bbase\b/i, /подставк/i, /основани/i];
+
+function findBaseFromGltfJson(gltfJson) {
+  if (!gltfJson) return null;
+  const nodes = gltfJson.nodes ?? [];
+  const meshes = gltfJson.meshes ?? [];
+  const accessors = gltfJson.accessors ?? [];
+  const candidates = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const name = node.name ?? "";
+    if (!BASE_NAME_PATTERNS.some((p) => p.test(name))) continue;
+    const meshIdx = node.mesh;
+    if (meshIdx === undefined) continue;
+    const prim = meshes[meshIdx]?.primitives?.[0];
+    const accIdx = prim?.attributes?.POSITION;
+    if (accIdx === undefined) continue;
+    const acc = accessors[accIdx];
+    if (!acc?.min || !acc?.max) continue;
+    const sx = Math.abs(node.scale?.[0] ?? 1);
+    const sy = Math.abs(node.scale?.[1] ?? 1);
+    const sz = Math.abs(node.scale?.[2] ?? 1);
+    candidates.push({
+      name,
+      node_idx: i,
+      mesh_idx: meshIdx,
+      range_x: (acc.max[0] - acc.min[0]) * sx,
+      range_y: (acc.max[1] - acc.min[1]) * sy,
+      range_z: (acc.max[2] - acc.min[2]) * sz,
+      t_y: node.translation?.[1] ?? 0,
+    });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => a.t_y - b.t_y);
+  return {
+    winner: candidates[0],
+    all_candidates: candidates,
+  };
+}
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { Buffer } from "node:buffer";
@@ -124,16 +182,30 @@ async function main() {
     for (const fig of figures) {
       console.log(`\n== ${fig.figure_id} ${fig.name}`);
       const t0 = Date.now();
+      // Парсим GLB metadata в node (минуя браузерный CORS).
+      const gltfJson = await fetchGlbJsonNode(fig.glb_url);
+      const preparsedBase = findBaseFromGltfJson(gltfJson);
+      if (preparsedBase) {
+        const w = preparsedBase.winner;
+        const unitToMm = fig.glb_unit === "cm" ? 10 : fig.glb_unit === "mm" ? 1 : 1000;
+        console.log(
+          `  preparsed base: name='${w.name}' size ${(w.range_x * unitToMm).toFixed(1)}×${(w.range_y * unitToMm).toFixed(1)}×${(w.range_z * unitToMm).toFixed(1)}mm  all=${JSON.stringify(preparsedBase.all_candidates.map((c) => c.name))}`,
+        );
+      } else {
+        console.log(`  preparsed base: NOT FOUND in GLB metadata`);
+      }
+
       let renderResult;
       try {
         renderResult = await page.evaluate(
-          (url, angles, size, glbUnit, assembledAt) =>
-            window.renderGLB(url, angles, size, glbUnit, assembledAt),
+          (url, angles, size, glbUnit, assembledAt, preparsed) =>
+            window.renderGLB(url, angles, size, glbUnit, assembledAt, preparsed),
           fig.glb_url,
           ANGLES,
           1024,
           fig.glb_unit ?? "m",
           fig.assembled_at ?? "end",
+          preparsedBase,
         );
       } catch (e) {
         console.error(`  render failed: ${e.message ?? e}`);
