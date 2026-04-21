@@ -56,6 +56,8 @@
       const n = obj.name ?? "";
       if (!n) return;
       if (!patterns.some((p) => p.test(n))) return;
+      // DIAGNOSTIC dump
+      console.log(`[base-candidate] name=${n} type=${obj.type} isMesh=${!!obj.isMesh} scale=${JSON.stringify(obj.scale?.toArray?.() ?? null)} pos=${JSON.stringify(obj.position?.toArray?.() ?? null)} quat=${JSON.stringify(obj.quaternion?.toArray?.() ?? null)}`);
       // Собираем union геометрии всех Mesh-детей этого узла.
       let localBox = null;
       obj.traverse((m) => {
@@ -63,6 +65,7 @@
         m.geometry.computeBoundingBox();
         const b = m.geometry.boundingBox;
         if (!b || !isFinite(b.min.y)) return;
+        console.log(`  [mesh-child] name=${m.name} scale=${JSON.stringify(m.scale?.toArray?.() ?? null)} bbox min=${JSON.stringify(b.min.toArray())} max=${JSON.stringify(b.max.toArray())} size=${JSON.stringify(b.getSize(new THREE.Vector3()).toArray())}`);
         if (!localBox) localBox = b.clone();
         else localBox.union(b);
       });
