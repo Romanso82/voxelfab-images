@@ -40,7 +40,6 @@ jobs:
         working-directory: .github/scripts
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MODEL_CODE: ${{ inputs.model_code }}
           RUN_LABEL: ${{ inputs.run_label }}
           DO_ANALYZE: ${{ inputs.analyze }}
