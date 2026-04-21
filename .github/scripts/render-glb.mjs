@@ -128,7 +128,8 @@ async function loadFigures() {
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model_code: MODEL_CODE }),
+    // scan=true фильтрует только сканируемые primary figures (не variants, не disabled)
+    body: JSON.stringify({ model_code: MODEL_CODE, scan: true }),
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.ok) {
