@@ -1,0 +1,71 @@
+name: Render GLB Trial
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_code:
+        description: "assembly_models.code (например 10201)"
+        required: true
+        default: "10201"
+      run_label:
+        description: "figure_vision_trials.run_label"
+        required: true
+        default: "glb_render_v1"
+      analyze:
+        description: "Отправлять в analyze-figure-renders (true/false)"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PUPPETEER_CACHE_DIR: ${{ github.workspace }}/.cache/puppeteer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install deps
+        working-directory: .github/scripts
+        run: npm install
+
+      - name: Render figures & post to Supabase
+        working-directory: .github/scripts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MODEL_CODE: ${{ inputs.model_code }}
+          RUN_LABEL: ${{ inputs.run_label }}
+          DO_ANALYZE: ${{ inputs.analyze }}
+          REPO_ROOT: ${{ github.workspace }}
+        run: node render-glb.mjs
+
+      - name: Commit renders
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add 3d_renders/
+          if git diff --cached --quiet; then
+            echo "No renders to commit"
+          else
+            git commit -m "chore(render): ${{ inputs.model_code }} / ${{ inputs.run_label }}"
+            git push
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Результат" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- model_code: \`${{ inputs.model_code }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- run_label: \`${{ inputs.run_label }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- analyze: \`${{ inputs.analyze }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Проверить результат: \`SELECT * FROM figure_vision_trials WHERE model_code='${{ inputs.model_code }}' AND run_label='${{ inputs.run_label }}' ORDER BY figure_id;\`" >> $GITHUB_STEP_SUMMARY
