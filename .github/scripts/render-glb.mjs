@@ -127,11 +127,13 @@ async function main() {
       let renderResult;
       try {
         renderResult = await page.evaluate(
-          (url, angles, size, glbUnit) => window.renderGLB(url, angles, size, glbUnit),
+          (url, angles, size, glbUnit, assembledAt) =>
+            window.renderGLB(url, angles, size, glbUnit, assembledAt),
           fig.glb_url,
           ANGLES,
           1024,
           fig.glb_unit ?? "m",
+          fig.assembled_at ?? "end",
         );
       } catch (e) {
         console.error(`  render failed: ${e.message ?? e}`);
