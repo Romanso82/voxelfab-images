@@ -1,0 +1,9 @@
+{
+  "name": "voxelfab-images-scripts",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.3",
+    "puppeteer": "^23.0.0"
+  }
+}
