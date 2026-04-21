@@ -97,7 +97,7 @@
     return { rangeX: maxX - minX, rangeZ: maxZ - minZ, hits };
   }
 
-  window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024, glbUnit = "m") {
+  window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024, glbUnit = "m", assembledAt = "end") {
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
@@ -137,25 +137,28 @@
     const model = gltf.scene;
 
     // === ИЗМЕРЕНИЯ В RAW UNITS (до применения scale и центрирования) ===
-    // Если есть анимация (сборка) — переключимся на последний кадр (assembled pose)
-    // чтобы мерить фигуру в финальном виде, а не в разобранном.
+    // Важно: assembledAt определяет в каком кадре фигура СОБРАНА.
+    //   'start' → frame 0 = assembled, последний кадр = разобрано (explode)
+    //   'end'   → frame 0 = разобрано, последний кадр = assembled
+    // Замеры (и рендер) делаем ИМЕННО в assembled-позе, иначе bbox захватывает
+    // разлетевшиеся детали и высоту завышает (у m9: 52 вместо 38 мм).
     let mixer = null;
+    const actions = [];
     if (gltf.animations && gltf.animations.length > 0) {
       mixer = new THREE.AnimationMixer(model);
-      let maxDur = 0;
       for (const clip of gltf.animations) {
         const a = mixer.clipAction(clip);
         a.setLoop(THREE.LoopRepeat, Infinity);
         a.enabled = true;
         a.play();
-        if (clip.duration > maxDur) maxDur = clip.duration;
+        actions.push(a);
       }
-      // Ставим каждому action его максимальное время (per-clip clamp)
-      mixer._actions.forEach((a) => {
+      for (const a of actions) {
         const d = a.getClip().duration;
-        a.time = Math.max(0, d - 0.001);
+        a.time = assembledAt === "start" ? 0 : Math.max(0, d - 0.001);
+        a.enabled = true;
         a.paused = false;
-      });
+      }
       mixer.update(0);
     }
     model.updateMatrixWorld(true);
