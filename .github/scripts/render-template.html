@@ -169,30 +169,35 @@
     const unitToMm = glbUnit === "m" ? 1000 : glbUnit === "cm" ? 10 : 1;
     const heightWithBaseMm = rawSize.y * unitToMm;
 
-    // Приоритет: именованный mesh "base"/"Base"/"подставка" в GLB → fallback на slice 10%.
+    // Приоритет: именованный mesh "base"/"Base"/"подставка" в GLB → fallback на тонкий slice.
     const namedBase = findBaseByName(model);
-    let baseMm, baseMethod, baseMeta;
+    let baseMm, baseMethod, baseMeta, baseThicknessRaw;
     if (namedBase && Math.max(namedBase.rangeX, namedBase.rangeZ) > 0) {
       baseMm = Math.max(namedBase.rangeX, namedBase.rangeZ) * unitToMm;
       baseMethod = "named_mesh";
       baseMeta = namedBase;
+      baseThicknessRaw = namedBase.sizeY;
     } else {
-      const baseSliceHeight = rawSize.y * 0.10;
-      const thresholdY = rawBox.min.y + baseSliceHeight;
+      // Slice только нижние 2 мм — это физическая толщина резиновой плиты базы.
+      // 10% slice захватывает декорации/оружие/обломки на верхней поверхности
+      // базы (fig2 10236 — булава торчит за край → ложные 74 мм вместо 60 мм).
+      // Ограничение снизу: минимум 5% bbox для очень низких фигур.
+      const baseSliceMm = 2;
+      const baseSliceRaw = Math.max(baseSliceMm / unitToMm, rawSize.y * 0.05);
+      const thresholdY = rawBox.min.y + baseSliceRaw;
       const slice = measureBaseFootprint(model, thresholdY);
       baseMm = Math.max(slice.rangeX, slice.rangeZ) * unitToMm;
-      baseMethod = "slice_10pct";
+      baseMethod = "slice_bottom_2mm";
       baseMeta = {
         threshold_y: thresholdY,
+        slice_height_mm: baseSliceRaw * unitToMm,
         range_x_raw: slice.rangeX,
         range_z_raw: slice.rangeZ,
         vertices_hit: slice.hits,
       };
+      baseThicknessRaw = baseSliceRaw;
     }
 
-    // Высота без базы: если нашли именованную базу — вычитаем её реальную толщину,
-    // иначе — приближённо вычитаем slice-высоту (10% bbox).
-    const baseThicknessRaw = namedBase ? namedBase.sizeY : rawSize.y * 0.10;
     const heightMm = heightWithBaseMm - baseThicknessRaw * unitToMm;
 
     const measurements = {
