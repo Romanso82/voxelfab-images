@@ -414,7 +414,9 @@
 
   // Снап к стандартам D&D/Pathfinder/Warhammer баз. Tolerance ±1.1 мм.
   // Возвращает стандартное значение или null если замер не попал ни в один.
-  const BASE_STANDARDS = [20, 25, 32, 40, 50, 65, 80, 100];
+  // D&D/Pathfinder (20/25/32/40/50/100), Warhammer 40k / AoS (25/32/40/50/60/65/80/100/130/160).
+  // 60мм = Warhammer Large Infantry / AoS Hero.
+  const BASE_STANDARDS = [20, 25, 32, 40, 50, 60, 65, 80, 100, 130, 160];
   function snapToStandard(mm, tolerance = 1.1) {
     for (const s of BASE_STANDARDS) {
       if (Math.abs(mm - s) <= tolerance) return s;
