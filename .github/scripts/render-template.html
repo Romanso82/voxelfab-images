@@ -43,10 +43,12 @@
     mat.needsUpdate = true;
   }
 
-  // Ищем mesh/node с именем похожим на базу. В GLB может быть несколько
-  // таких имён (напр. 10236 fig2 имеет '60_base' у дна + '232_base.001'
-  // где-то в фигуре) — берём ТУ у которой min.y самый низкий (реально у дна).
-  // Бонус: если имя содержит число (напр. '60_base' → 60мм), извлекаем его.
+  // Ищем mesh/node с именем "base" и возвращаем ЛОКАЛЬНЫЙ geometry bbox × scale.
+  // Почему не world bbox: у Blender-экспорта node может иметь rotation 180°
+  // (квот ≈ (-0.99, 0, 0.14, 0) у 10236 fig2), и three.js setFromObject
+  // применяет всю матрицу → AABB повёрнутой плоской базы получается меньше
+  // реального диаметра (10236 fig2: real 60, world bbox дал 37).
+  // Геометрия в local coords — это чистый дизайн меша, rotation на размер не влияет.
   function findBaseByName(root) {
     const patterns = [/\bbase\b/i, /подставк/i, /основани/i];
     const candidates = [];
@@ -54,33 +56,47 @@
       const n = obj.name ?? "";
       if (!n) return;
       if (!patterns.some((p) => p.test(n))) return;
-      obj.updateMatrixWorld(true);
-      const box = new THREE.Box3().setFromObject(obj);
-      if (!isFinite(box.min.y) || !isFinite(box.max.y)) return;
-      const sz = new THREE.Vector3();
-      box.getSize(sz);
-      if (sz.x <= 0 && sz.z <= 0) return;
-      candidates.push({ obj, box, sz, minY: box.min.y });
+      // Собираем union геометрии всех Mesh-детей этого узла.
+      let localBox = null;
+      obj.traverse((m) => {
+        if (!m.isMesh || !m.geometry) return;
+        m.geometry.computeBoundingBox();
+        const b = m.geometry.boundingBox;
+        if (!b || !isFinite(b.min.y)) return;
+        if (!localBox) localBox = b.clone();
+        else localBox.union(b);
+      });
+      if (!localBox) return;
+      const lsz = localBox.getSize(new THREE.Vector3());
+      // Abs scale убирает отрицательные (mirror) значения.
+      const sx = Math.abs(obj.scale?.x ?? 1);
+      const sy = Math.abs(obj.scale?.y ?? 1);
+      const sz = Math.abs(obj.scale?.z ?? 1);
+      const rangeX = lsz.x * sx;
+      const rangeZ = lsz.z * sz;
+      const sizeY = lsz.y * sy;
+      if (rangeX <= 0 && rangeZ <= 0) return;
+      // Для сортировки кандидатов используем translation.y (ниже = ближе к дну).
+      const tY = obj.position?.y ?? 0;
+      candidates.push({ obj, rangeX, rangeZ, sizeY, tY });
     });
     if (!candidates.length) return null;
-    candidates.sort((a, b) => a.minY - b.minY);
+    candidates.sort((a, b) => a.tY - b.tY);
     const winner = candidates[0];
-    // Число в имени = hint размера (напр. '60_base' → 60 мм)
     const nameMatch = winner.obj.name.match(/(\d+)[_\s-]*base|base[_\s-]*(\d+)/i);
     const nameDimMm = nameMatch ? parseInt(nameMatch[1] ?? nameMatch[2], 10) : null;
     return {
       name: winner.obj.name,
-      rangeX: winner.sz.x,
-      rangeZ: winner.sz.z,
-      sizeY: winner.sz.y,
-      min_y: winner.box.min.y,
-      max_y: winner.box.max.y,
+      rangeX: winner.rangeX,
+      rangeZ: winner.rangeZ,
+      sizeY: winner.sizeY,
+      tY: winner.tY,
       name_hint_dim_mm: nameDimMm,
       all_candidates: candidates.map((c) => ({
         name: c.obj.name,
-        min_y: c.minY,
-        size_x: c.sz.x,
-        size_z: c.sz.z,
+        t_y_mm: c.tY * 1000,
+        range_x_mm: c.rangeX * 1000,
+        range_z_mm: c.rangeZ * 1000,
       })),
     };
   }
