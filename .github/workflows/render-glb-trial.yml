@@ -55,7 +55,21 @@ jobs:
             echo "No renders to commit"
           else
             git commit -m "chore(render): ${{ inputs.model_code }} / ${{ inputs.run_label }}"
-            git push
+            # Retry push with rebase — защита от race между параллельными workflow
+            for attempt in 1 2 3 4 5; do
+              if git push 2>&1; then
+                echo "✓ Push ok on attempt $attempt"
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "✗ Push failed after 5 attempts"
+                exit 1
+              fi
+              echo "↻ Push rejected, attempt $attempt — rebasing on main..."
+              git fetch origin main
+              git pull --rebase origin main || exit 1
+              sleep $((RANDOM % 5 + 2))
+            done
           fi
 
       - name: Summary
