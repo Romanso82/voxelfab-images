@@ -228,6 +228,38 @@
     };
   }
 
+  // Вычисляет высоту фигуры без базы: union bbox всех мешей кроме тех,
+  // у кого в имени (или у родителя) есть "base"/подставк/основани.
+  // Работает в world-координатах (model.updateMatrixWorld уже вызван).
+  // Возвращает высоту в мм или null если не нашлось ни одного non-base меша.
+  function measureFigureBodyHeight(root, unitToMm) {
+    const BASE_PATTERNS = [
+      /(^|[_\-\.\s])base([_\-\.\s]|$)/i,
+      /подставк/i,
+      /основани/i,
+    ];
+    function isBase(obj) {
+      let cur = obj;
+      while (cur) {
+        if (cur.name && BASE_PATTERNS.some((p) => p.test(cur.name))) return true;
+        cur = cur.parent;
+      }
+      return false;
+    }
+    const box = new THREE.Box3();
+    let found = false;
+    root.traverse((obj) => {
+      if (!obj.isMesh || !obj.geometry) return;
+      if (isBase(obj)) return;
+      obj.geometry.computeBoundingBox();
+      const b = obj.geometry.boundingBox.clone().applyMatrix4(obj.matrixWorld);
+      if (!b.min.isFinite?.() && !isFinite(b.min.y)) return;
+      if (!found) { box.copy(b); found = true; } else box.union(b);
+    });
+    if (!found) return null;
+    return box.getSize(new THREE.Vector3()).y * unitToMm;
+  }
+
   window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024, glbUnit = "m", assembledAt = "end", preparsedBase = null) {
     const canvas = document.createElement("canvas");
     canvas.width = size;
@@ -350,7 +382,11 @@
       baseThicknessRaw = baseSliceRaw;
     }
 
-    const heightMm = heightWithBaseMm - baseThicknessRaw * unitToMm;
+    // Новый метод: bbox всех nodes кроме base → не зависит от sizeY базы.
+    // Fallback на старый метод если non-base nodes не нашлось.
+    const figureBodyMm = measureFigureBodyHeight(model, unitToMm);
+    const heightMm = figureBodyMm ?? (heightWithBaseMm - baseThicknessRaw * unitToMm);
+    const heightMethod = figureBodyMm != null ? "figure_nodes_excl_base" : "total_minus_base_thickness";
 
     const measurements = {
       height_with_base_mm: Math.round(heightWithBaseMm),
@@ -358,6 +394,7 @@
       base_mm: Math.round(baseMm),
       base_standard_mm: snapToStandard(baseMm),
       base_method: baseMethod,
+      height_method: heightMethod,
       raw_bbox: {
         min: { x: rawBox.min.x, y: rawBox.min.y, z: rawBox.min.z },
         max: { x: rawBox.max.x, y: rawBox.max.y, z: rawBox.max.z },
