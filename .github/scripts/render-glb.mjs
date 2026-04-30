@@ -139,6 +139,27 @@ async function loadFigures() {
   return { model: data.model, figures: data.figures };
 }
 
+// GLB-бакет vfpro приватизирован 2026-04-30 — анонимный GET → 403.
+// Запрашиваем presigned URL'ы (TTL 1ч) перед рендером и подменяем fig.glb_url.
+async function presignFigures(figures) {
+  const url = `${SUPABASE_URL}/functions/v1/presign-glb-view`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keys: figures.map((f) => f.glb_url) }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data?.urls) {
+    throw new Error(`presign-glb-view ${resp.status}: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  for (const fig of figures) {
+    const signed = data.urls[fig.glb_url];
+    if (!signed) throw new Error(`no signed url for ${fig.figure_id} (${fig.glb_url})`);
+    fig.glb_url = signed;
+  }
+  console.log(`presigned ${figures.length} GLB URLs (expires ${data.expires_at})`);
+}
+
 async function postAnalyze({ figure, renders, measurements, modelName }) {
   // scan-figure-renders: копия analyze-miniature-images с тем же UNIFIED_PROMPT,
   // пишет в figure_vision_trials (sandbox) и считает embedding 3072d.
@@ -169,6 +190,7 @@ async function postAnalyze({ figure, renders, measurements, modelName }) {
 async function main() {
   const { model, figures } = await loadFigures();
   console.log(`Model ${model.code} "${model.name}" — ${figures.length} figures`);
+  await presignFigures(figures);
 
   const templatePath = join(__dirname, "render-template.html");
   const templateHtml = await readFile(templatePath, "utf8");
