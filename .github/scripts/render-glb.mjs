@@ -86,6 +86,26 @@ function findBaseFromGltfJson(gltfJson) {
     all_candidates: candidates,
   };
 }
+
+// Число печатаемых деталей = mesh-ноды в glTF (каждая нода с mesh = отдельная деталь).
+// База считается отдельной частью (входит в part_count, трекается в base_count).
+// Паттерны базы шире BASE_NAME_PATTERNS: ловят также Base<digits> и _gr (ground).
+const PART_BASE_PATTERNS = [
+  /(^|[_\-.\s])base([_\-.\s]|$)/i,
+  /(^|[_\-.\s])base\d+/i,
+  /(^|[_\-.\s])gr([_\-.\s]|$)/i,
+  /подставк/i,
+  /основани/i,
+];
+function countPartsFromGltfJson(gltfJson) {
+  if (!gltfJson) return { part_count: null, base_count: null };
+  const nodes = gltfJson.nodes ?? [];
+  const meshNodes = nodes.filter((n) => n.mesh !== undefined && n.mesh !== null);
+  const baseCount = meshNodes.filter((n) =>
+    PART_BASE_PATTERNS.some((p) => p.test(n.name ?? "")),
+  ).length;
+  return { part_count: meshNodes.length, base_count: baseCount };
+}
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { Buffer } from "node:buffer";
@@ -256,6 +276,12 @@ async function main() {
       }
       const renders = renderResult.images;
       const measurements = renderResult.measurements;
+      const parts = countPartsFromGltfJson(gltfJson);
+      if (parts.part_count != null) {
+        measurements.part_count = parts.part_count;
+        measurements.base_count = parts.base_count;
+      }
+      console.log(`  parts: count=${parts.part_count ?? "?"} base=${parts.base_count ?? "?"}`);
       console.log(`  rendered ${renders.length} angles in ${Date.now() - t0} ms`);
       console.log(
         `  measured: total=${measurements.height_with_base_mm}mm body=${measurements.height_mm}mm base=${measurements.base_mm}mm std=${measurements.base_standard_mm ?? "-"}mm unit=${measurements.glb_unit_used}`,
