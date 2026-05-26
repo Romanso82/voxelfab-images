@@ -260,7 +260,7 @@
     return box.getSize(new THREE.Vector3()).y * unitToMm;
   }
 
-  window.renderGLB = async function renderGLB(glbUrl, angles, size = 1024, glbUnit = "m", assembledAt = "end", preparsedBase = null) {
+  window.renderGLB = async function renderGLB(glbBase64, angles, size = 1024, glbUnit = "m", assembledAt = "end", preparsedBase = null) {
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
@@ -292,10 +292,16 @@
     rim.position.set(-4, 4, -5);
     scene.add(rim);
 
+    // Декодируем base64 → ArrayBuffer и парсим GLB локально. Никаких fetch,
+    // никакого CORS — bucket даже не задействован на этом этапе.
+    const binStr = atob(glbBase64);
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+
     const loader = new GLTFLoader();
     loader.setDRACOLoader(dracoLoader);
     const gltf = await new Promise((resolve, reject) => {
-      loader.load(glbUrl, resolve, undefined, reject);
+      loader.parse(bytes.buffer, "", resolve, reject);
     });
     const model = gltf.scene;
 

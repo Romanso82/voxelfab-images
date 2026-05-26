@@ -12,8 +12,9 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { Buffer as NodeBuffer } from "node:buffer";
 
 // Fetch GLB binary, parse header + JSON chunk в Node (без браузерного CORS).
-// Возвращает parsed gltf.json или null при ошибке.
-async function fetchGlbJsonNode(url) {
+// Возвращает { json, bytes } или null при ошибке. bytes передаются в Three.js
+// внутри Puppeteer через loader.parse() — это обходит CORS bucket'а полностью.
+async function fetchGlbBundle(url) {
   try {
     const resp = await fetch(url);
     console.log(`  glb fetch: status=${resp.status} ok=${resp.ok} len=${resp.headers.get("content-length")}`);
@@ -30,9 +31,9 @@ async function fetchGlbJsonNode(url) {
     const jsonStr = buf.slice(20, 20 + chunkLen).toString("utf8");
     const parsed = JSON.parse(jsonStr);
     console.log(`  glb json: nodes=${parsed.nodes?.length} meshes=${parsed.meshes?.length}`);
-    return parsed;
+    return { json: parsed, bytes: buf };
   } catch (e) {
-    console.warn(`  fetchGlbJsonNode: ${e.message}`);
+    console.warn(`  fetchGlbBundle: ${e.message}`);
     return null;
   }
 }
@@ -244,8 +245,10 @@ async function main() {
     for (const fig of figures) {
       console.log(`\n== ${fig.figure_id} ${fig.name}`);
       const t0 = Date.now();
-      // Парсим GLB metadata в node (минуя браузерный CORS).
-      const gltfJson = await fetchGlbJsonNode(fig.glb_url);
+      // Качаем GLB байты + парсим JSON header в node (минуя браузерный CORS).
+      // Те же байты передаются в Three.js через loader.parse() — second fetch не нужен.
+      const glb = await fetchGlbBundle(fig.glb_url);
+      const gltfJson = glb?.json ?? null;
       const preparsedBase = findBaseFromGltfJson(gltfJson);
       if (preparsedBase) {
         const w = preparsedBase.winner;
@@ -257,12 +260,19 @@ async function main() {
         console.log(`  preparsed base: NOT FOUND in GLB metadata`);
       }
 
+      if (!glb?.bytes) {
+        console.error(`  glb bytes missing — cannot render`);
+        summary.push({ figure: fig.figure_id, state: "render_error", error: "glb bytes missing" });
+        continue;
+      }
+      const glbBase64 = glb.bytes.toString("base64");
+
       let renderResult;
       try {
         renderResult = await page.evaluate(
-          (url, angles, size, glbUnit, assembledAt, preparsed) =>
-            window.renderGLB(url, angles, size, glbUnit, assembledAt, preparsed),
-          fig.glb_url,
+          (b64, angles, size, glbUnit, assembledAt, preparsed) =>
+            window.renderGLB(b64, angles, size, glbUnit, assembledAt, preparsed),
+          glbBase64,
           ANGLES,
           1024,
           fig.glb_unit ?? "m",
