@@ -339,7 +339,10 @@
     const heightWithBaseMm = rawSize.y * unitToMm;
 
     // Приоритет: preparsedBase из node.js (raw accessor, без CORS)
-    //   → fetch GLB в браузере (если preparsed нет) → three.js findBaseByName → slice.
+    //   → three.js findBaseByName → slice (внизу по толщине).
+    // Прежняя попытка fetchGlbJson(glbUrl) в браузере удалена: после миграции
+    // на loader.parse(bytes) (CORS bypass) glbUrl в renderGLB не передаётся,
+    // и любая фигура без именованной базы падала с «glbUrl is not defined».
     let namedBase = null;
     if (preparsedBase?.winner) {
       const w = preparsedBase.winner;
@@ -353,10 +356,6 @@
         source: "preparsed_node",
         all_candidates: preparsedBase.all_candidates,
       };
-    }
-    if (!namedBase) {
-      const gltfJson = await fetchGlbJson(glbUrl);
-      namedBase = gltfJson ? findBaseFromGltfJson(gltfJson) : null;
     }
     if (!namedBase) namedBase = findBaseByName(model);
     let baseMm, baseMethod, baseMeta, baseThicknessRaw;
