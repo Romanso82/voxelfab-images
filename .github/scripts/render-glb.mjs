@@ -196,16 +196,26 @@ async function postAnalyze({ figure, renders, measurements, modelName }) {
     images_base64: renders.map((r) => r.base64),
     measurements, // { height_mm, height_with_base_mm, base_mm, base_standard_mm, raw_bbox, glb_unit_used }
   };
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok || !data.ok) {
-    throw new Error(`scan-figure-renders ${resp.status}: ${JSON.stringify(data).slice(0, 300)}`);
+  // Gemini периодически отдаёт 503 UNAVAILABLE (run 28653001210, 2026-07-03) —
+  // ретраим transient-ошибки (5xx/429) с паузой; 4xx падают сразу.
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data.ok) return data;
+    lastErr = new Error(`scan-figure-renders ${resp.status}: ${JSON.stringify(data).slice(0, 300)}`);
+    const transient = resp.status >= 500 || resp.status === 429;
+    if (!transient || attempt === MAX_ATTEMPTS) throw lastErr;
+    const delayS = attempt * 30;
+    console.warn(`  analyze attempt ${attempt}/${MAX_ATTEMPTS} failed (${resp.status}), retry in ${delayS}s`);
+    await new Promise((r) => setTimeout(r, delayS * 1000));
   }
-  return data;
+  throw lastErr;
 }
 
 async function main() {
