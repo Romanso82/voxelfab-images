@@ -45,7 +45,7 @@ async function fetchGlbBundle(url) {
 // Does NOT match: 'baseball', 'databases'
 // Причина: \b (word boundary) в JS не работает рядом с '_' т.к. оба \w.
 const BASE_NAME_PATTERNS = [
-  /(^|[_\-\.\s])base([_\-\.\s]|$)/i,
+  /(^|[_\-\.\s])base(?:tc)?([_\-\.\s]|$)/i,
   /подставк/i,
   /основани/i,
 ];
@@ -92,7 +92,7 @@ function findBaseFromGltfJson(gltfJson) {
 // База считается отдельной частью (входит в part_count, трекается в base_count).
 // Паттерны базы шире BASE_NAME_PATTERNS: ловят также Base<digits> и _gr (ground).
 const PART_BASE_PATTERNS = [
-  /(^|[_\-.\s])base([_\-.\s]|$)/i,
+  /(^|[_\-.\s])base(?:tc)?([_\-.\s]|$)/i,
   /(^|[_\-.\s])base\d+/i,
   /(^|[_\-.\s])gr([_\-.\s]|$)/i,
   /подставк/i,
@@ -382,3 +382,4 @@ main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
+

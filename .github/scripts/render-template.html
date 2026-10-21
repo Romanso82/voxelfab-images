@@ -74,7 +74,7 @@
   // 60_base имеет quaternion 180° → world AABB квадрата 60×60 → 74×74 или 37×37).
   function findBaseFromGltfJson(gltfJson) {
     const patterns = [
-      /(^|[_\-\.\s])base([_\-\.\s]|$)/i,
+      /(^|[_\-\.\s])base(?:tc)?([_\-\.\s]|$)/i,
       /подставк/i,
       /основани/i,
     ];
@@ -135,7 +135,7 @@
 
   function findBaseByName(root) {
     const patterns = [
-      /(^|[_\-\.\s])base([_\-\.\s]|$)/i,
+      /(^|[_\-\.\s])base(?:tc)?([_\-\.\s]|$)/i,
       /подставк/i,
       /основани/i,
     ];
@@ -234,7 +234,7 @@
   // Возвращает высоту в мм или null если не нашлось ни одного non-base меша.
   function measureFigureBodyHeight(root, unitToMm) {
     const BASE_PATTERNS = [
-      /(^|[_\-\.\s])base([_\-\.\s]|$)/i,
+      /(^|[_\-\.\s])base(?:tc)?([_\-\.\s]|$)/i,
       /подставк/i,
       /основани/i,
     ];
@@ -470,3 +470,4 @@
 </script>
 </body>
 </html>
+
